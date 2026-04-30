@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Foto a KMZ — Extractor de coordenadas</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&display=swap" rel="stylesheet">
+
+<style>
+:root {
+  --ink:        #1a1814;
+  --ink-soft:   #4a4540;
+  --ink-faint:  #8a857e;
+  --paper:      #f5f1e8;
+  --paper-deep: #ebe5d4;
+  --line:       #d4cdb8;
+  --accent:     #c8472a;        /* survey-flag red */
+  --accent-deep:#9c2f15;
+  --ok:         #3d6b3a;
+  --warn:       #b8860b;
+  --err:        #a52a2a;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 100vh;
+}
+
+/* Topographic-map background lines */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    repeating-linear-gradient(0deg,
+      transparent 0, transparent 39px,
+      rgba(26, 24, 20, 0.025) 39px, rgba(26, 24, 20, 0.025) 40px),
+    repeating-linear-gradient(90deg,
+      transparent 0, transparent 39px,
+      rgba(26, 24, 20, 0.025) 39px, rgba(26, 24, 20, 0.025) 40px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 48px 32px 80px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ─── HEADER ─────────────────────────────────────────────────────── */
+header {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 28px;
+  margin-bottom: 36px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: end;
+  gap: 24px;
+}
+
+.crosshair {
+  width: 56px;
+  height: 56px;
+  position: relative;
+  flex-shrink: 0;
+}
+.crosshair::before, .crosshair::after {
+  content: '';
+  position: absolute;
+  background: var(--accent);
+}
+.crosshair::before {
+  top: 50%; left: 0; right: 0; height: 1.5px;
+  transform: translateY(-50%);
+}
+.crosshair::after {
+  left: 50%; top: 0; bottom: 0; width: 1.5px;
+  transform: translateX(-50%);
+}
+.crosshair-ring {
+  position: absolute; inset: 8px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+}
+.crosshair-dot {
+  position: absolute; inset: 24px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.title-block h1 {
+  font-family: 'Fraunces', Georgia, serif;
+  font-weight: 800;
+  font-size: 38px;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--ink);
+}
+.title-block .sub {
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.meta {
+  text-align: right;
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.6;
+}
+.meta .coord {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--ink-soft);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+/* ─── DROP ZONE ──────────────────────────────────────────────────── */
+.dropzone {
+  border: 2px dashed var(--line);
+  background: var(--paper-deep);
+  padding: 56px 32px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 180ms ease;
+  position: relative;
+  overflow: hidden;
+}
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--accent);
+  background: #f0e8d0;
+}
+.dropzone.dragover { transform: scale(1.005); }
+
+.dropzone-icon {
+  font-family: 'Fraunces', Georgia, serif;
+  font-weight: 800;
+  font-size: 64px;
+  color: var(--accent);
+  line-height: 1;
+  margin-bottom: 16px;
+  letter-spacing: -0.05em;
+}
+.dropzone-text {
+  font-size: 15px;
+  color: var(--ink);
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+.dropzone-hint {
+  font-size: 12px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+}
+.dropzone input[type=file] { display: none; }
+
+/* Corner ticks on dropzone */
+.dropzone::before, .dropzone::after,
+.dropzone .tick-tl, .dropzone .tick-tr {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--accent);
+}
+.dropzone::before { top: 8px; left: 8px; border-right: 0; border-bottom: 0; }
+.dropzone::after  { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
+.dropzone .tick-tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; }
+.dropzone .tick-bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; }
+
+/* ─── STATUS / LOADING ───────────────────────────────────────────── */
+#status {
+  margin-top: 24px;
+  padding: 16px 20px;
+  background: var(--ink);
+  color: var(--paper);
+  display: none;
+  align-items: center;
+  gap: 14px;
+  font-size: 13px;
+}
+#status.visible { display: flex; }
+#status.error { background: var(--err); }
+#status.success { background: var(--ok); }
+
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid var(--paper);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── RESULTS TABLE ──────────────────────────────────────────────── */
+.results {
+  margin-top: 36px;
+  display: none;
+}
+.results.visible { display: block; }
+
+.results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.results-header h2 {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.results-stats {
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.results-stats .count-ok { color: var(--ok); font-weight: 700; }
+.results-stats .count-fail { color: var(--err); font-weight: 700; }
+
+.row {
+  display: grid;
+  grid-template-columns: 80px 1fr 200px 90px 80px;
+  gap: 16px;
+  padding: 14px 4px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+  font-size: 12px;
+}
+.row:hover { background: rgba(200, 71, 42, 0.04); }
+
+.row .thumb {
+  width: 72px; height: 56px;
+  background: var(--paper-deep);
+  background-size: cover;
+  background-position: center;
+  border: 1px solid var(--line);
+}
+.row .filename {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--ink-soft);
+  word-break: break-all;
+  line-height: 1.4;
+}
+.row .coords {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 500;
+}
+.row .coords .label { color: var(--ink-faint); margin-right: 4px; }
+.row .badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid var(--line);
+  color: var(--ink-soft);
+  text-align: center;
+}
+.row .status-cell {
+  text-align: right;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.row.ok .status-cell { color: var(--ok); }
+.row.fail .status-cell { color: var(--err); }
+.row.fail .coords { color: var(--ink-faint); font-style: italic; }
+
+/* ─── DOWNLOAD ───────────────────────────────────────────────────── */
+.download-section {
+  margin-top: 40px;
+  padding: 32px;
+  background: var(--ink);
+  color: var(--paper);
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.download-section.visible { display: flex; }
+
+.download-info h3 {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+}
+.download-info p {
+  font-size: 12px;
+  color: rgba(245, 241, 232, 0.6);
+  letter-spacing: 0.04em;
+}
+
+button.download {
+  background: var(--accent);
+  color: var(--paper);
+  border: none;
+  padding: 14px 28px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+button.download:hover { background: var(--accent-deep); }
+button.download:active { transform: translateY(1px); }
+
+button.reset {
+  background: transparent;
+  color: var(--paper);
+  border: 1px solid rgba(245, 241, 232, 0.3);
+  padding: 14px 20px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  margin-left: 8px;
+}
+button.reset:hover { border-color: var(--paper); }
+
+/* ─── FOOTER ─────────────────────────────────────────────────────── */
+footer {
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.05em;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* Mobile */
+@media (max-width: 720px) {
+  header { grid-template-columns: 1fr; gap: 16px; }
+  .meta { text-align: left; }
+  .row {
+    grid-template-columns: 60px 1fr;
+    gap: 12px;
+    grid-template-areas:
+      "thumb filename"
+      "thumb coords"
+      "thumb status";
+  }
+  .row .thumb { grid-area: thumb; }
+  .row .filename { grid-area: filename; }
+  .row .coords { grid-area: coords; }
+  .row .badge { display: none; }
+  .row .status-cell { grid-area: status; text-align: left; }
+  .download-section { flex-direction: column; align-items: stretch; }
+  .title-block h1 { font-size: 28px; }
+  .container { padding: 32px 20px 60px; }
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+  <header>
+    <div class="crosshair">
+      <div class="crosshair-ring"></div>
+      <div class="crosshair-dot"></div>
+    </div>
+    <div class="title-block">
+      <h1>Foto · KMZ</h1>
+      <div class="sub">Extractor de coordenadas para fotos de campo</div>
+    </div>
+    <div class="meta">
+      v1.0
+      <div class="coord">— 12.046°S 77.043°W</div>
+    </div>
+  </header>
+
+  <label class="dropzone" id="dropzone">
+    <span class="tick-tr"></span>
+    <span class="tick-bl"></span>
+    <div class="dropzone-icon">+</div>
+    <div class="dropzone-text">Arrastra fotos aquí o haz clic para seleccionar</div>
+    <div class="dropzone-hint">JPG · PNG · varias a la vez</div>
+    <input type="file" id="fileInput" accept="image/jpeg,image/png" multiple>
+  </label>
+
+  <div id="status"></div>
+
+  <div class="results" id="results">
+    <div class="results-header">
+      <h2>Resultados</h2>
+      <div class="results-stats" id="stats"></div>
+    </div>
+    <div id="rows"></div>
+  </div>
+
+  <div class="download-section" id="downloadSection">
+    <div class="download-info">
+      <h3>KMZ listo</h3>
+      <p>Ábrelo en Google Earth para verificar las ubicaciones</p>
+    </div>
+    <div>
+      <button class="download" id="downloadBtn">↓ Descargar KMZ</button>
+      <button class="reset" id="resetBtn">Empezar de nuevo</button>
+    </div>
+  </div>
+
+  <footer>
+    <div>OCR offline en tu navegador · Tus fotos no salen de tu PC</div>
+    <div>Tesseract.js · JSZip</div>
+  </footer>
+
+</div>
+
+<!-- Libraries from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.0.4/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<script>
+'use strict';
+
+// ─── REGEX PATTERNS (mirrors the Python extractor) ──────────────────
+const RE_LAT_LABEL = /Latitud[:\s]*(-?\d{1,2}[.,]\d{3,})/i;
+const RE_LON_LABEL = /Longitud[:\s]*(-?\d{1,3}[.,]\d{3,})/i;
+const RE_SW = /(\d{1,2}[.,]\d{3,})\s*[Ss8B]\s+(\d{1,3}[.,]\d{3,})\s*[Ww]/;
+const RE_PAIR = /(-?\d{1,2}[.,]\d{4,})\s*[,;]\s*(-?\d{1,3}[.,]\d{4,})/;
+
+// Peru bounding box
+const PERU_LAT = [-18.5, 0.5];
+const PERU_LON = [-82.0, -68.0];
+
+const toFloat = s => parseFloat(s.replace(',', '.'));
+const plausible = (lat, lon) =>
+  lat >= PERU_LAT[0] && lat <= PERU_LAT[1] &&
+  lon >= PERU_LON[0] && lon <= PERU_LON[1];
+
+function extractCoords(text) {
+  const latM = text.match(RE_LAT_LABEL);
+  const lonM = text.match(RE_LON_LABEL);
+  if (latM && lonM) {
+    const lat = toFloat(latM[1]), lon = toFloat(lonM[1]);
+    if (plausible(lat, lon)) return { lat, lon, pattern: 'labeled' };
+  }
+  const sw = text.match(RE_SW);
+  if (sw) {
+    const lat = -Math.abs(toFloat(sw[1]));
+    const lon = -Math.abs(toFloat(sw[2]));
+    if (plausible(lat, lon)) return { lat, lon, pattern: 'S/W' };
+  }
+  const pair = text.match(RE_PAIR);
+  if (pair) {
+    const lat = toFloat(pair[1]), lon = toFloat(pair[2]);
+    if (plausible(lat, lon)) return { lat, lon, pattern: 'pair' };
+  }
+  return null;
+}
+
+// ─── IMAGE HELPERS ───────────────────────────────────────────────────
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Get a canvas from an image, optionally rotated and/or cropped+upscaled.
+// rotation: 0|90|180|270 (degrees clockwise)
+// crop: {xf, yf, wf, hf} fractions, or null for full image
+// upscale: integer multiplier
+function rasterize(img, rotation = 0, crop = null, upscale = 1) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+
+  // Apply rotation by drawing into a rotated canvas first
+  let srcW = img.width, srcH = img.height;
+  let rotCanvas;
+  if (rotation === 0) {
+    rotCanvas = img;
+  } else {
+    rotCanvas = document.createElement('canvas');
+    if (rotation === 90 || rotation === 270) {
+      rotCanvas.width = img.height;
+      rotCanvas.height = img.width;
+    } else {
+      rotCanvas.width = img.width;
+      rotCanvas.height = img.height;
+    }
+    const rctx = rotCanvas.getContext('2d');
+    rctx.translate(rotCanvas.width / 2, rotCanvas.height / 2);
+    rctx.rotate(rotation * Math.PI / 180);
+    rctx.drawImage(img, -img.width / 2, -img.height / 2);
+    srcW = rotCanvas.width;
+    srcH = rotCanvas.height;
+  }
+
+  // Apply crop
+  let sx = 0, sy = 0, sw = srcW, sh = srcH;
+  if (crop) {
+    sx = Math.floor(srcW * crop.xf);
+    sy = Math.floor(srcH * crop.yf);
+    sw = Math.floor(srcW * crop.wf);
+    sh = Math.floor(srcH * crop.hf);
+  }
+
+  canvas.width = sw * upscale;
+  canvas.height = sh * upscale;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(rotCanvas, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+// ─── OCR ENGINE ──────────────────────────────────────────────────────
+let worker = null;
+async function getWorker(onProgress) {
+  if (worker) return worker;
+  worker = await Tesseract.createWorker('spa', 1, {
+    logger: m => {
+      if (onProgress && m.status === 'loading language traineddata') {
+        onProgress(`Descargando modelo de idioma... ${Math.round(m.progress * 100)}%`);
+      } else if (onProgress && m.status === 'initializing api') {
+        onProgress('Inicializando OCR...');
+      }
+    }
+  });
+  return worker;
+}
+
+async function ocrCanvas(canvas) {
+  const w = await getWorker();
+  const { data } = await w.recognize(canvas);
+  return data.text;
+}
+
+// ─── EXTRACTION PIPELINE ─────────────────────────────────────────────
+const CROP_VARIANTS = [
+  { name: 'bl-half',  xf: 0.0, yf: 0.5, wf: 0.5, hf: 0.5 },
+  { name: 'br-half',  xf: 0.5, yf: 0.5, wf: 0.5, hf: 0.5 },
+  { name: 'tl-half',  xf: 0.0, yf: 0.0, wf: 0.5, hf: 0.5 },
+  { name: 'tr-half',  xf: 0.5, yf: 0.0, wf: 0.5, hf: 0.5 },
+  { name: 'bl-tall',  xf: 0.0, yf: 0.4, wf: 0.5, hf: 0.6 },
+  { name: 'br-tall',  xf: 0.5, yf: 0.4, wf: 0.5, hf: 0.6 },
+  { name: 'bl-tight', xf: 0.0, yf: 0.5, wf: 0.4, hf: 0.5 }
+];
+
+async function processImage(file, onStep) {
+  const img = await loadImage(file);
+
+  // Pass 1: full image, all rotations
+  for (const angle of [0, 270, 90, 180]) {
+    if (onStep) onStep(`OCR completo (rotación ${angle}°)`);
+    const canvas = rasterize(img, angle, null, 1);
+    const text = await ocrCanvas(canvas);
+    const result = extractCoords(text);
+    if (result) {
+      return { ...result, angle, source: 'full', file, img };
+    }
+  }
+
+  // Pass 2: corner crops at 2x upscale, all rotations
+  for (const angle of [0, 270, 90, 180]) {
+    for (const crop of CROP_VARIANTS) {
+      if (onStep) onStep(`Recorte ${crop.name} (rot ${angle}°)`);
+      const canvas = rasterize(img, angle, crop, 2);
+      const text = await ocrCanvas(canvas);
+      const result = extractCoords(text);
+      if (result) {
+        return { ...result, angle, source: `crop:${crop.name}`, file, img };
+      }
+    }
+  }
+
+  return { error: 'no_coords_found', file, img };
+}
+
+// ─── KMZ BUILDER ─────────────────────────────────────────────────────
+function buildKml(results, docName) {
+  const placemarks = results.filter(r => !r.error).map(r => {
+    const safeName = (r.file.name.replace(/\.[^.]+$/, ''))
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeFile = r.file.name
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `  <Placemark>
+    <name>${safeName}</name>
+    <styleUrl>#photo</styleUrl>
+    <description><![CDATA[
+      <img src="files/${r.file.name}" width="500"/><br/>
+      <b>Archivo:</b> ${r.file.name}<br/>
+      <b>Coordenadas:</b> ${r.lat.toFixed(6)}, ${r.lon.toFixed(6)}
+    ]]></description>
+    <Point><coordinates>${r.lon.toFixed(6)},${r.lat.toFixed(6)},0</coordinates></Point>
+  </Placemark>`;
+  }).join('\n');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>${docName}</name>
+  <Style id="photo">
+    <IconStyle>
+      <Icon><href>http://maps.google.com/mapfiles/kml/shapes/camera.png</href></Icon>
+    </IconStyle>
+  </Style>
+${placemarks}
+</Document>
+</kml>`;
+}
+
+async function buildKmz(results) {
+  const zip = new JSZip();
+  const docName = `fibra_optica_${new Date().toISOString().slice(0, 10)}`;
+  zip.file('doc.kml', buildKml(results, docName));
+  for (const r of results) {
+    if (!r.error) {
+      zip.file(`files/${r.file.name}`, r.file);
+    }
+  }
+  return await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.google-earth.kmz' });
+}
+
+// ─── UI WIRING ───────────────────────────────────────────────────────
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const rowsEl = document.getElementById('rows');
+const statsEl = document.getElementById('stats');
+const downloadSection = document.getElementById('downloadSection');
+const downloadBtn = document.getElementById('downloadBtn');
+const resetBtn = document.getElementById('resetBtn');
+
+let currentResults = [];
+
+function setStatus(msg, kind = 'info') {
+  statusEl.className = 'visible' + (kind !== 'info' ? ' ' + kind : '');
+  statusEl.innerHTML = (kind === 'info' ? '<div class="spinner"></div>' : '') +
+                       `<span>${msg}</span>`;
+}
+function clearStatus() {
+  statusEl.className = '';
+  statusEl.innerHTML = '';
+}
+
+function thumbnailDataURL(img, maxSize = 144) {
+  const canvas = document.createElement('canvas');
+  const ratio = Math.min(maxSize / img.width, maxSize / img.height);
+  canvas.width = img.width * ratio;
+  canvas.height = img.height * ratio;
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.7);
+}
+
+function renderRow(r, index) {
+  const row = document.createElement('div');
+  row.className = 'row ' + (r.error ? 'fail' : 'ok');
+
+  const thumb = document.createElement('div');
+  thumb.className = 'thumb';
+  if (r.img) thumb.style.backgroundImage = `url(${thumbnailDataURL(r.img)})`;
+
+  const fname = document.createElement('div');
+  fname.className = 'filename';
+  fname.textContent = r.file.name;
+
+  const coords = document.createElement('div');
+  coords.className = 'coords';
+  if (r.error) {
+    coords.textContent = 'No se detectaron coordenadas';
+  } else {
+    coords.innerHTML =
+      `<span class="label">LAT</span>${r.lat.toFixed(6)}<br>` +
+      `<span class="label">LON</span>${r.lon.toFixed(6)}`;
+  }
+
+  const badge = document.createElement('div');
+  badge.className = 'badge';
+  badge.textContent = r.error ? '—' : (r.pattern + ' · ' + r.source);
+
+  const status = document.createElement('div');
+  status.className = 'status-cell';
+  status.textContent = r.error ? 'Sin datos' : 'OK';
+
+  row.append(thumb, fname, coords, badge, status);
+  rowsEl.appendChild(row);
+}
+
+function updateStats(results) {
+  const ok = results.filter(r => !r.error).length;
+  const fail = results.length - ok;
+  statsEl.innerHTML = `<span class="count-ok">${ok}</span> exitosas` +
+    (fail > 0 ? ` · <span class="count-fail">${fail}</span> sin datos` : '');
+}
+
+async function handleFiles(files) {
+  if (!files.length) return;
+
+  rowsEl.innerHTML = '';
+  resultsEl.classList.remove('visible');
+  downloadSection.classList.remove('visible');
+  currentResults = [];
+
+  // Initialize worker (downloads model on first run)
+  setStatus('Preparando OCR...');
+  try {
+    await getWorker(msg => setStatus(msg));
+  } catch (e) {
+    setStatus('Error inicializando OCR: ' + e.message, 'error');
+    return;
+  }
+
+  resultsEl.classList.add('visible');
+
+  // Process files sequentially (Tesseract worker is single-threaded)
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    setStatus(`Procesando ${i + 1} de ${files.length}: ${f.name}`);
+    try {
+      const r = await processImage(f, msg => {
+        setStatus(`[${i + 1}/${files.length}] ${f.name} — ${msg}`);
+      });
+      currentResults.push(r);
+      renderRow(r, i);
+      updateStats(currentResults);
+    } catch (e) {
+      const errResult = { error: e.message, file: f, img: null };
+      currentResults.push(errResult);
+      renderRow(errResult, i);
+      updateStats(currentResults);
+    }
+  }
+
+  const okCount = currentResults.filter(r => !r.error).length;
+  if (okCount > 0) {
+    setStatus(`Listo. ${okCount} de ${files.length} fotos procesadas correctamente.`, 'success');
+    downloadSection.classList.add('visible');
+  } else {
+    setStatus('No se pudieron extraer coordenadas de ninguna foto.', 'error');
+  }
+}
+
+// Event listeners
+dropzone.addEventListener('click', e => {
+  if (e.target.tagName !== 'INPUT') fileInput.click();
+});
+fileInput.addEventListener('change', e => handleFiles([...e.target.files]));
+
+['dragover', 'dragenter'].forEach(evt => {
+  dropzone.addEventListener(evt, e => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach(evt => {
+  dropzone.addEventListener(evt, e => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+  });
+});
+dropzone.addEventListener('drop', e => {
+  const files = [...e.dataTransfer.files].filter(f =>
+    /\.(jpe?g|png)$/i.test(f.name)
+  );
+  handleFiles(files);
+});
+
+downloadBtn.addEventListener('click', async () => {
+  setStatus('Empaquetando KMZ...');
+  try {
+    const blob = await buildKmz(currentResults);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fibra_optica_${new Date().toISOString().slice(0, 10)}.kmz`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    setStatus('KMZ descargado.', 'success');
+  } catch (e) {
+    setStatus('Error generando KMZ: ' + e.message, 'error');
+  }
+});
+
+resetBtn.addEventListener('click', () => {
+  currentResults = [];
+  rowsEl.innerHTML = '';
+  resultsEl.classList.remove('visible');
+  downloadSection.classList.remove('visible');
+  clearStatus();
+  fileInput.value = '';
+});
+
+// Prevent page from accepting dropped files outside the dropzone
+['dragover', 'drop'].forEach(evt => {
+  window.addEventListener(evt, e => {
+    if (!dropzone.contains(e.target)) e.preventDefault();
+  });
+});
+</script>
+</body>
+</html>
