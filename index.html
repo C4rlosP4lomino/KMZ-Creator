@@ -770,9 +770,9 @@ async function handleFiles(files) {
 }
 
 // Event listeners
-dropzone.addEventListener('click', e => {
-  if (e.target.tagName !== 'INPUT') fileInput.click();
-});
+// Note: the <label> wraps the <input>, so clicking the label opens the file
+// picker natively. We do NOT need a JS click handler — adding one would
+// cause the picker to open twice.
 fileInput.addEventListener('change', e => handleFiles([...e.target.files]));
 
 ['dragover', 'dragenter'].forEach(evt => {
