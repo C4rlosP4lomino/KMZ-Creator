@@ -405,14 +405,14 @@ footer {
     </div>
   </header>
 
-  <label class="dropzone" id="dropzone">
+  <div class="dropzone" id="dropzone" role="button" tabindex="0">
     <span class="tick-tr"></span>
     <span class="tick-bl"></span>
     <div class="dropzone-icon">+</div>
     <div class="dropzone-text">Arrastra fotos aquí o haz clic para seleccionar</div>
     <div class="dropzone-hint">JPG · PNG · varias a la vez</div>
-    <input type="file" id="fileInput" accept="image/jpeg,image/png" multiple>
-  </label>
+  </div>
+  <input type="file" id="fileInput" accept="image/jpeg,image/png" multiple style="display:none">
 
   <div id="status"></div>
 
@@ -449,38 +449,67 @@ footer {
 <script>
 'use strict';
 
-// ─── REGEX PATTERNS (mirrors the Python extractor) ──────────────────
-const RE_LAT_LABEL = /Latitud[:\s]*(-?\d{1,2}[.,]\d{3,})/i;
-const RE_LON_LABEL = /Longitud[:\s]*(-?\d{1,3}[.,]\d{3,})/i;
-const RE_SW = /(\d{1,2}[.,]\d{3,})\s*[Ss8B]\s+(\d{1,3}[.,]\d{3,})\s*[Ww]/;
-const RE_PAIR = /(-?\d{1,2}[.,]\d{4,})\s*[,;]\s*(-?\d{1,3}[.,]\d{4,})/;
+// Small helper used in a couple of places for safe HTML insertion.
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ─── REGEX PATTERNS (tolerant of common OCR mistakes) ──────────────
+// The full "Latitud" / "Longitud" labels often come back from OCR with
+// missing or substituted letters (Lattud, Latittud, Lattud:, L0ngitud, etc).
+// We accept any reasonable letter-soup between 'Lat' / 'Lon' and 'tud',
+// and also a short fallback "Lat:" / "Lon:" / "Long:" without the 'tud'.
+// Numbers may have a stray space after the minus sign.
+const RE_LAT_LABEL  = /L[a@4]t[a-záíi1l]{0,4}tud[\s:.,;=]*(-?\s*\d{1,2}[.,]\d{3,7})/i;
+const RE_LON_LABEL  = /L[o0]n[a-záíi1l]{0,4}tud[\s:.,;=]*(-?\s*\d{1,3}[.,]\d{3,7})/i;
+const RE_LAT_SHORT  = /\bLat\b[\s:.,;=]*(-?\s*\d{1,2}[.,]\d{4,7})/i;
+const RE_LON_SHORT  = /\bLon[gq]?\b[\s:.,;=]*(-?\s*\d{1,3}[.,]\d{4,7})/i;
+const RE_SW         = /(\d{1,2}[.,]\d{3,})\s*[Ss8B]\s+(\d{1,3}[.,]\d{3,})\s*[Ww]/;
+const RE_PAIR       = /(-?\d{1,2}[.,]\d{4,7})\s*[,;\s\n]\s*(-?\d{1,3}[.,]\d{4,7})/;
 
 // Peru bounding box
 const PERU_LAT = [-18.5, 0.5];
 const PERU_LON = [-82.0, -68.0];
 
-const toFloat = s => parseFloat(s.replace(',', '.'));
+// Parse a number that may have a stray space (e.g. "- 9.123456").
+const toFloat = s => parseFloat(String(s).replace(',', '.').replace(/\s+/g, ''));
 const plausible = (lat, lon) =>
   lat >= PERU_LAT[0] && lat <= PERU_LAT[1] &&
   lon >= PERU_LON[0] && lon <= PERU_LON[1];
 
 function extractCoords(text) {
+  // Primary: full labels (most reliable when present)
   const latM = text.match(RE_LAT_LABEL);
   const lonM = text.match(RE_LON_LABEL);
   if (latM && lonM) {
     const lat = toFloat(latM[1]), lon = toFloat(lonM[1]);
     if (plausible(lat, lon)) return { lat, lon, pattern: 'labeled' };
   }
+  // Fallback: short labels (Lat:, Lon:, Long:)
+  const latS = text.match(RE_LAT_SHORT);
+  const lonS = text.match(RE_LON_SHORT);
+  if (latS && lonS) {
+    const lat = toFloat(latS[1]), lon = toFloat(lonS[1]);
+    if (plausible(lat, lon)) return { lat, lon, pattern: 'short-label' };
+  }
+  // Hemisphere markers (e.g. "9.1234 S 78.5678 W")
   const sw = text.match(RE_SW);
   if (sw) {
     const lat = -Math.abs(toFloat(sw[1]));
     const lon = -Math.abs(toFloat(sw[2]));
     if (plausible(lat, lon)) return { lat, lon, pattern: 'S/W' };
   }
+  // Last resort: any two decimal numbers in sequence
   const pair = text.match(RE_PAIR);
   if (pair) {
     const lat = toFloat(pair[1]), lon = toFloat(pair[2]);
     if (plausible(lat, lon)) return { lat, lon, pattern: 'pair' };
+    // Try swapped (longitude first)
+    if (plausible(lon, lat)) return { lat: lon, lon: lat, pattern: 'pair-swapped' };
   }
   return null;
 }
@@ -541,6 +570,24 @@ function rasterize(img, rotation = 0, crop = null, upscale = 1) {
   return canvas;
 }
 
+// Apply OCR preprocessing in-place on a canvas: convert to grayscale and
+// binarize with a fixed threshold. This dramatically improves Tesseract's
+// reading of overlays that have semi-transparent backgrounds or low contrast.
+// Tested locally: recovered photos that failed without it.
+function preprocessCanvas(canvas, threshold = 130) {
+  const ctx = canvas.getContext('2d');
+  const data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const px = data.data;
+  for (let i = 0; i < px.length; i += 4) {
+    // Luminance (Rec. 601)
+    const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const v = lum < threshold ? 0 : 255;
+    px[i] = px[i + 1] = px[i + 2] = v;
+  }
+  ctx.putImageData(data, 0, 0);
+  return canvas;
+}
+
 // ─── OCR ENGINE ──────────────────────────────────────────────────────
 let worker = null;
 async function getWorker(onProgress) {
@@ -564,59 +611,97 @@ async function ocrCanvas(canvas) {
 }
 
 // ─── EXTRACTION PIPELINE ─────────────────────────────────────────────
+// Crop variants: bottom corners in different sizes (overlays are almost
+// always bottom-left of the image), plus a few top-corner fallbacks for
+// edge cases. The sizes vary so that a slightly-too-wide overlay still fits.
 const CROP_VARIANTS = [
-  { name: 'bl-half',  xf: 0.0, yf: 0.5, wf: 0.5, hf: 0.5 },
-  { name: 'br-half',  xf: 0.5, yf: 0.5, wf: 0.5, hf: 0.5 },
-  { name: 'tl-half',  xf: 0.0, yf: 0.0, wf: 0.5, hf: 0.5 },
-  { name: 'tr-half',  xf: 0.5, yf: 0.0, wf: 0.5, hf: 0.5 },
-  { name: 'bl-tall',  xf: 0.0, yf: 0.4, wf: 0.5, hf: 0.6 },
-  { name: 'br-tall',  xf: 0.5, yf: 0.4, wf: 0.5, hf: 0.6 },
-  { name: 'bl-tight', xf: 0.0, yf: 0.5, wf: 0.4, hf: 0.5 }
+  // Bottom-left (most common location)
+  { name: 'BL-A', xf: 0.0,  yf: 0.70, wf: 0.55, hf: 0.30 },
+  { name: 'BL-B', xf: 0.0,  yf: 0.65, wf: 0.65, hf: 0.35 },
+  { name: 'BL-C', xf: 0.0,  yf: 0.75, wf: 0.50, hf: 0.25 },
+  { name: 'BL-D', xf: 0.0,  yf: 0.60, wf: 0.70, hf: 0.40 },
+  // Bottom-right
+  { name: 'BR-A', xf: 0.45, yf: 0.70, wf: 0.55, hf: 0.30 },
+  { name: 'BR-B', xf: 0.35, yf: 0.65, wf: 0.65, hf: 0.35 },
+  // Top corners (rare but happens)
+  { name: 'TL-A', xf: 0.0,  yf: 0.0,  wf: 0.55, hf: 0.30 },
+  { name: 'TR-A', xf: 0.45, yf: 0.0,  wf: 0.55, hf: 0.30 },
 ];
 
 async function processImage(file, onStep) {
   const img = await loadImage(file);
+  // Track the OCR text from each attempt for diagnostic purposes.
+  const attempts = [];
 
-  // Pass 1: full image, all rotations
+  // Helper that runs OCR on a canvas, optionally preprocessed, with the
+  // appropriate metadata for diagnostics. Returns a successful result or null.
+  async function tryOcr(canvas, source, angle, preprocessed) {
+    if (preprocessed) preprocessCanvas(canvas, 130);
+    const text = await ocrCanvas(canvas);
+    attempts.push({ source, angle, preprocessed, text });
+    const result = extractCoords(text);
+    if (result) {
+      const label = preprocessed ? `${source}+pp` : source;
+      return { ...result, angle, source: label, file, img };
+    }
+    return null;
+  }
+
+  // Pass 1: full image, 4 rotations, no preprocessing (fastest, catches easy cases)
   for (const angle of [0, 270, 90, 180]) {
     if (onStep) onStep(`OCR completo (rotación ${angle}°)`);
     const canvas = rasterize(img, angle, null, 1);
-    const text = await ocrCanvas(canvas);
-    const result = extractCoords(text);
-    if (result) {
-      return { ...result, angle, source: 'full', file, img };
-    }
+    const r = await tryOcr(canvas, 'full', angle, false);
+    if (r) return r;
   }
 
-  // Pass 2: corner crops at 2x upscale, all rotations
+  // Pass 2: full image, 4 rotations, WITH preprocessing
+  for (const angle of [0, 270, 90, 180]) {
+    if (onStep) onStep(`OCR completo + preproc (rotación ${angle}°)`);
+    const canvas = rasterize(img, angle, null, 1);
+    const r = await tryOcr(canvas, 'full', angle, true);
+    if (r) return r;
+  }
+
+  // Pass 3: corner crops at 3x upscale + preprocessing, all rotations
   for (const angle of [0, 270, 90, 180]) {
     for (const crop of CROP_VARIANTS) {
-      if (onStep) onStep(`Recorte ${crop.name} (rot ${angle}°)`);
-      const canvas = rasterize(img, angle, crop, 2);
-      const text = await ocrCanvas(canvas);
-      const result = extractCoords(text);
-      if (result) {
-        return { ...result, angle, source: `crop:${crop.name}`, file, img };
-      }
+      if (onStep) onStep(`Recorte ${crop.name} + preproc (rot ${angle}°)`);
+      const canvas = rasterize(img, angle, crop, 3);
+      const r = await tryOcr(canvas, `crop:${crop.name}`, angle, true);
+      if (r) return r;
     }
   }
 
-  return { error: 'no_coords_found', file, img };
+  // Pick the attempt that produced the most readable text — most useful
+  // diagnostic when the photo can't be processed automatically.
+  attempts.sort((a, b) =>
+    b.text.replace(/\s/g, '').length - a.text.replace(/\s/g, '').length);
+  const best = attempts[0] || { source: 'n/a', angle: 0, text: '' };
+  const sourceLabel = best.preprocessed ? `${best.source}+pp` : best.source;
+  return {
+    error: 'no_coords_found', file, img,
+    ocrText: best.text,
+    ocrSource: `${sourceLabel} @${best.angle}°`,
+  };
 }
 
 // ─── KMZ BUILDER ─────────────────────────────────────────────────────
 function buildKml(results, docName) {
-  const placemarks = results.filter(r => !r.error).map(r => {
-    const safeName = (r.file.name.replace(/\.[^.]+$/, ''))
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  // Only successful extractions become placemarks.
+  // Numbering is based on the index after filtering, so failed photos
+  // don't leave gaps in the sequence.
+  const ok = results.filter(r => !r.error);
+  const placemarks = ok.map((r, i) => {
+    const num = String(i + 1).padStart(3, '0');
     const safeFile = r.file.name
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     return `  <Placemark>
-    <name>${safeName}</name>
+    <name>${num}</name>
     <styleUrl>#photo</styleUrl>
     <description><![CDATA[
       <img src="files/${r.file.name}" width="500"/><br/>
-      <b>Archivo:</b> ${r.file.name}<br/>
+      <b>Archivo:</b> ${safeFile}<br/>
       <b>Coordenadas:</b> ${r.lat.toFixed(6)}, ${r.lon.toFixed(6)}
     ]]></description>
     <Point><coordinates>${r.lon.toFixed(6)},${r.lat.toFixed(6)},0</coordinates></Point>
@@ -691,12 +776,35 @@ function renderRow(r, index) {
 
   const fname = document.createElement('div');
   fname.className = 'filename';
-  fname.textContent = r.file.name;
+  // Show "001 · filename.jpg" so it's clear what the placemark will be called
+  if (r.error) {
+    fname.textContent = r.file.name;
+  } else {
+    const num = String(r.placemarkNum).padStart(3, '0');
+    fname.innerHTML = `<strong style="color:var(--accent)">${num}</strong> · ${r.file.name}`;
+  }
 
   const coords = document.createElement('div');
   coords.className = 'coords';
   if (r.error) {
-    coords.textContent = 'No se detectaron coordenadas';
+    // Show the raw OCR text so the user can diagnose what went wrong:
+    // - if it shows the overlay text, the regex didn't match (we need to extend the patterns)
+    // - if it shows garbage, the OCR couldn't read the overlay (preprocessing issue)
+    // - if it shows nothing, the overlay wasn't visible in any pass (crop/rotation issue)
+    const trimmed = (r.ocrText || '').trim();
+    const preview = trimmed
+      ? trimmed.slice(0, 220).replace(/\s+/g, ' ')
+      : '(sin texto detectado)';
+    coords.innerHTML =
+      `<div style="color:var(--err); margin-bottom:6px;">No se detectaron coordenadas</div>` +
+      `<details style="font-size:11px;">` +
+      `<summary style="cursor:pointer; color:var(--ink-faint); letter-spacing:0.05em;">` +
+      `Ver texto OCR (${r.ocrSource || 'n/a'})</summary>` +
+      `<div style="margin-top:6px; padding:8px 10px; background:var(--paper-deep); ` +
+      `border-left: 2px solid var(--warn); font-family:'JetBrains Mono', monospace; ` +
+      `font-size:10px; line-height:1.5; color:var(--ink-soft); white-space:pre-wrap; ` +
+      `word-break:break-word; max-height:120px; overflow-y:auto;">${escapeHtml(preview)}</div>` +
+      `</details>`;
   } else {
     coords.innerHTML =
       `<span class="label">LAT</span>${r.lat.toFixed(6)}<br>` +
@@ -725,6 +833,12 @@ function updateStats(results) {
 async function handleFiles(files) {
   if (!files.length) return;
 
+  // Sort chronologically by file's lastModified timestamp.
+  // This way the placemark numbering (001, 002, ...) reflects the
+  // real order in which the photos were taken, regardless of the
+  // order they were dragged in or the filename.
+  files = [...files].sort((a, b) => a.lastModified - b.lastModified);
+
   rowsEl.innerHTML = '';
   resultsEl.classList.remove('visible');
   downloadSection.classList.remove('visible');
@@ -742,6 +856,7 @@ async function handleFiles(files) {
   resultsEl.classList.add('visible');
 
   // Process files sequentially (Tesseract worker is single-threaded)
+  let okCounter = 0;
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     setStatus(`Procesando ${i + 1} de ${files.length}: ${f.name}`);
@@ -749,6 +864,10 @@ async function handleFiles(files) {
       const r = await processImage(f, msg => {
         setStatus(`[${i + 1}/${files.length}] ${f.name} — ${msg}`);
       });
+      if (!r.error) {
+        okCounter++;
+        r.placemarkNum = okCounter;
+      }
       currentResults.push(r);
       renderRow(r, i);
       updateStats(currentResults);
@@ -770,9 +889,13 @@ async function handleFiles(files) {
 }
 
 // Event listeners
-// Note: the <label> wraps the <input>, so clicking the label opens the file
-// picker natively. We do NOT need a JS click handler — adding one would
-// cause the picker to open twice.
+// The input is now OUTSIDE the dropzone (no <label> wrapping), so we
+// trigger it explicitly. This avoids the double-fire bug some browsers
+// have when a file input is nested inside a label.
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+});
 fileInput.addEventListener('change', e => handleFiles([...e.target.files]));
 
 ['dragover', 'dragenter'].forEach(evt => {
@@ -830,3 +953,4 @@ resetBtn.addEventListener('click', () => {
 </script>
 </body>
 </html>
+
